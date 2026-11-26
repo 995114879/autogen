@@ -195,6 +195,40 @@ def test_generate_llms_files_covers_all_guide_pages(tmp_path: Path) -> None:
             assert not target.split("#")[0].endswith(".ipynb"), f"unrewritten notebook link in {page.rel}: {target}"
 
 
+def test_group_pages_puts_section_index_first() -> None:
+    pages = [
+        llms_txt.GuidePage(
+            rel="user-guide/core-user-guide/components/tools.md",
+            docname="user-guide/core-user-guide/components/tools",
+            path=Path("tools.md"),
+            section="core-user-guide",
+        ),
+        llms_txt.GuidePage(
+            rel="user-guide/core-user-guide/cookbook/index.md",
+            docname="user-guide/core-user-guide/cookbook/index",
+            path=Path("cookbook.md"),
+            section="core-user-guide",
+        ),
+        llms_txt.GuidePage(
+            rel="user-guide/core-user-guide/index.md",
+            docname="user-guide/core-user-guide/index",
+            path=Path("index.md"),
+            section="core-user-guide",
+        ),
+    ]
+
+    grouped = llms_txt.group_pages_by_section(pages)
+
+    assert len(grouped) == 1
+    title, section_pages = grouped[0]
+    assert title == "Core User Guide"
+    assert [page.docname for page in section_pages] == [
+        "user-guide/core-user-guide/index",
+        "user-guide/core-user-guide/cookbook/index",
+        "user-guide/core-user-guide/components/tools",
+    ]
+
+
 @pytest.mark.parametrize("docname", ["user-guide/core-user-guide/index", "user-guide/agentchat-user-guide/quickstart"])
 def test_discover_includes_docnames(docname: str) -> None:
     docnames = {page.docname for page in llms_txt.discover_user_guide_pages(SRC_DIR)}

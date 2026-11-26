@@ -113,6 +113,9 @@ def render_source(path: Path) -> str:
 _FRONT_MATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n", re.DOTALL)
 # ``{toctree}`` directive blocks (MyST fenced and colon-fenced variants).
 _TOCTREE_RE = re.compile(r"(?m)^(?P<fence>`{3,}|:{3,})\{toctree\}.*?^(?P=fence)\s*$", re.DOTALL)
+_FENCE_START_RE = re.compile(r"^\s*(`{3,}|~{3,})")
+_LINK_RE = re.compile(r"(!?)\[([^\]]*)\]\(([^)\s]+)(\s+(?:\"[^\"]*\"|'[^']*'))?\)")
+_HAS_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:")
 
 
 def strip_markdown_noise(text: str) -> str:
@@ -180,10 +183,6 @@ def page_title(page: GuidePage) -> str:
 # ---------------------------------------------------------------------------
 # Link rewriting
 # ---------------------------------------------------------------------------
-
-_LINK_RE = re.compile(r"(!?)\[([^\]]*)\]\(([^)\s]+)(\s+(?:\"[^\"]*\"|'[^']*'))?\)")
-_FENCE_START_RE = re.compile(r"^\s*(`{3,}|~{3,})")
-_HAS_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:")
 
 
 def docname_for_target(target_path: str, page_rel: str, srcdir: Path) -> Optional[str]:
@@ -322,7 +321,8 @@ def build_llms_full(
 def group_pages_by_section(pages: Sequence[GuidePage]) -> List[Tuple[str, List[GuidePage]]]:
     """Group pages into ordered ``(section title, pages)`` pairs.
 
-    Pages are ordered with ``index`` pages first, then by path.
+    Pages are ordered with the section's own ``index`` page first, then nested
+    ``index`` pages, then the remaining pages by path.
     """
     grouped: Dict[str, List[GuidePage]] = {}
     for page in pages:
@@ -335,10 +335,16 @@ def group_pages_by_section(pages: Sequence[GuidePage]) -> List[Tuple[str, List[G
 
     result: List[Tuple[str, List[GuidePage]]] = []
     for section in sorted(grouped, key=order):
-        section_pages = sorted(
-            grouped[section],
-            key=lambda p: (0 if posixpath.basename(p.rel).startswith("index.") else 1, p.rel),
-        )
+        section_index = f"user-guide/{section}/index" if section else "user-guide/index"
+
+        def page_order(page: GuidePage) -> Tuple[int, str]:
+            if page.docname == section_index:
+                return (0, page.rel)
+            if posixpath.basename(page.rel).startswith("index."):
+                return (1, page.rel)
+            return (2, page.rel)
+
+        section_pages = sorted(grouped[section], key=page_order)
         result.append((GUIDE_TITLES.get(section, _DEFAULT_SECTION_TITLE), section_pages))
     return result
 
