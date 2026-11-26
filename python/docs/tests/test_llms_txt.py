@@ -44,6 +44,10 @@ def _make_source_tree(root: Path) -> Path:
                 "[sibling](index.md)",
                 "[parent](../b/index.md)",
                 "[external](https://example.com/x.md)",
+                "[site](https://microsoft.github.io/autogen/dev/user-guide/a/nb.html#sec)",
+                "[stable-site](https://microsoft.github.io/autogen/stable/user-guide/b/index.html)",
+                "[site-root](https://microsoft.github.io/autogen/dev/user-guide/a/missing.html)",
+                "[archive](https://microsoft.github.io/autogen/0.2/docs/topics/x.html)",
                 "[anchor](#local)",
                 "[missing](does-not-exist.md)",
                 "![image](pic.png)",
@@ -104,6 +108,11 @@ def test_rewrite_markdown_links(tmp_path: Path) -> None:
     assert "[sibling](index.md)" in rewritten
     assert "[parent](../b/index.md)" in rewritten
     assert "[external](https://example.com/x.md)" in rewritten
+    # Links to the published site point at the compiled Markdown pages.
+    assert "[site](nb.md#sec)" in rewritten
+    assert "[stable-site](../b/index.md)" in rewritten
+    assert "[site-root](https://microsoft.github.io/autogen/dev/user-guide/a/missing.html)" in rewritten
+    assert "[archive](https://microsoft.github.io/autogen/0.2/docs/topics/x.html)" in rewritten
     assert "[anchor](#local)" in rewritten
     assert "[missing](does-not-exist.md)" in rewritten
     assert "![image](pic.png)" in rewritten
@@ -155,13 +164,13 @@ def test_generate_llms_files_covers_all_guide_pages(tmp_path: Path) -> None:
 
     result = llms_txt.generate_llms_files(SRC_DIR, outdir)
 
-    assert result.index == outdir / llms_txt.LLMS_FILENAME
-    assert result.full == outdir / llms_txt.LLMS_FULL_FILENAME
-    assert result.index.is_file()
-    assert result.full.is_file()
-    assert result.full.read_text(encoding="utf-8").startswith("# AutoGen\n")
+    assert result.index_path == outdir / llms_txt.LLMS_FILENAME
+    assert result.full_path == outdir / llms_txt.LLMS_FULL_FILENAME
+    assert result.index_path.is_file()
+    assert result.full_path.is_file()
+    assert result.full_path.read_text(encoding="utf-8").startswith("# AutoGen\n")
 
-    llms_text = result.index.read_text(encoding="utf-8")
+    llms_text = result.index_path.read_text(encoding="utf-8")
     targets = set()
     sections = 0
     for line in llms_text.splitlines():
@@ -193,6 +202,23 @@ def test_generate_llms_files_covers_all_guide_pages(tmp_path: Path) -> None:
             if re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:", target) or target.startswith(("#", "/")):
                 continue
             assert not target.split("#")[0].endswith(".ipynb"), f"unrewritten notebook link in {page.rel}: {target}"
+
+
+def test_generate_llms_files_skips_pages_the_build_did_not_produce(tmp_path: Path) -> None:
+    src = _make_source_tree(tmp_path)
+    outdir = tmp_path / "build"
+    # Only ``user-guide/a/index`` gets an HTML page in this build.
+    index_html = outdir / "user-guide/a/index.html"
+    index_html.parent.mkdir(parents=True, exist_ok=True)
+    index_html.write_text("<!doctype html>", encoding="utf-8")
+
+    result = llms_txt.generate_llms_files(src, outdir)
+
+    llms_text = result.index_path.read_text(encoding="utf-8")
+    assert "(user-guide/a/index.md)" in llms_text
+    assert "(user-guide/a/nb.md)" not in llms_text
+    assert "(user-guide/b/index.md)" not in llms_text
+    assert not (outdir / "user-guide/a/nb.md").exists()
 
 
 def test_group_pages_puts_section_index_first() -> None:

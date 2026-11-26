@@ -18,7 +18,7 @@ import json
 import posixpath
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 if TYPE_CHECKING:  # pragma: no cover - sphinx is only available during a docs build
     from sphinx.application import Sphinx
@@ -82,7 +82,7 @@ def discover_user_guide_pages(srcdir: Path) -> List[GuidePage]:
     return pages
 
 
-def render_notebook(nb: Dict) -> str:
+def render_notebook(nb: Dict[str, Any]) -> str:
     """Render a parsed notebook as Markdown.
 
     Markdown cells are emitted verbatim and code cells are emitted as fenced
@@ -116,6 +116,10 @@ _TOCTREE_RE = re.compile(r"(?m)^(?P<fence>`{3,}|:{3,})\{toctree\}.*?^(?P=fence)\
 _FENCE_START_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 _LINK_RE = re.compile(r"(!?)\[([^\]]*)\]\(([^)\s]+)(\s+(?:\"[^\"]*\"|'[^']*'))?\)")
 _HAS_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:")
+# Absolute links to the published site: ``https://microsoft.github.io/autogen/<version>/<path>``.
+_SITE_URL_RE = re.compile(
+    r"^https?://microsoft\.github\.io/autogen/(?:dev|stable|[0-9][^/]*)/(?P<path>[^#?\s]+)(?P<suffix>[#?].*)?$"
+)
 
 
 def strip_markdown_noise(text: str) -> str:
@@ -220,6 +224,34 @@ def _relative_link(dest: str, page_rel: str) -> str:
     return posixpath.relpath(dest, page_dir)
 
 
+def _rewrite_absolute_link(
+    target: str,
+    page_rel: str,
+    srcdir: Path,
+    target_for_doc: Callable[[str], Optional[str]],
+) -> Optional[str]:
+    """Rewrite links to the published site that resolve to a page we build.
+
+    Site-absolute links (e.g. ``https://microsoft.github.io/autogen/dev/...``)
+    would otherwise send readers of the compiled Markdown to a different
+    version of the docs than the one ``llms.txt`` describes.  Links that do not
+    resolve to a source page (older doc layouts, external sites) are kept as-is.
+    """
+    match = _SITE_URL_RE.match(target)
+    if match is None:
+        return None
+    path = match.group("path")
+    if path.endswith(".html"):
+        path = path[: -len(".html")]
+    docname = docname_for_target(path, "", srcdir)
+    if docname is None:
+        return None
+    dest = target_for_doc(docname)
+    if dest is None:
+        return None
+    return _relative_link(dest, page_rel) + (match.group("suffix") or "")
+
+
 def _rewrite_link(
     match: "re.Match[str]",
     page_rel: str,
@@ -229,7 +261,10 @@ def _rewrite_link(
     is_image, label, target, title = match.group(1), match.group(2), match.group(3), match.group(4) or ""
     if is_image:
         return match.group(0)
-    if _HAS_SCHEME_RE.match(target) or target.startswith(("#", "/", "<", "{")):
+    if _HAS_SCHEME_RE.match(target):
+        rewritten = _rewrite_absolute_link(target, page_rel, srcdir, target_for_doc)
+        return match.group(0) if rewritten is None else f"[{label}]({rewritten}{title})"
+    if target.startswith(("#", "/", "<", "{")):
         return match.group(0)
     path, sep, anchor = target.partition("#")
     docname = docname_for_target(path, page_rel, srcdir)
@@ -337,7 +372,7 @@ def group_pages_by_section(pages: Sequence[GuidePage]) -> List[Tuple[str, List[G
     for section in sorted(grouped, key=order):
         section_index = f"user-guide/{section}/index" if section else "user-guide/index"
 
-        def page_order(page: GuidePage) -> Tuple[int, str]:
+        def page_order(page: GuidePage, section_index: str = section_index) -> Tuple[int, str]:
             if page.docname == section_index:
                 return (0, page.rel)
             if posixpath.basename(page.rel).startswith("index."):
@@ -358,8 +393,9 @@ class GeneratedFiles(NamedTuple):
     """Paths written by :func:`generate_llms_files`."""
 
     pages: List[Path]
-    index: Path
-    full: Path
+    # ``index``/``full`` are avoided: those names shadow ``tuple`` methods.
+    index_path: Path
+    full_path: Path
 
 
 def generate_llms_files(srcdir: Path, outdir: Path, *, project: str = "AutoGen") -> GeneratedFiles:
@@ -381,7 +417,8 @@ def generate_llms_files(srcdir: Path, outdir: Path, *, project: str = "AutoGen")
         # Any other resolvable doc (e.g. the generated API reference) is only
         # available as HTML; point there so the compiled Markdown has no
         # dangling internal links.
-        return docname + ".html"
+        html_target = docname + ".html"
+        return html_target if (outdir / html_target).is_file() else None
 
     md_paths: List[Path] = []
     index_sections: List[Tuple[str, List[Tuple[str, str]]]] = []
@@ -411,7 +448,7 @@ def generate_llms_files(srcdir: Path, outdir: Path, *, project: str = "AutoGen")
     full_path = outdir / LLMS_FULL_FILENAME
     full_path.write_text(build_llms_full(full_sections, project=project), encoding="utf-8")
     md_paths.extend([llms_path, full_path])
-    return GeneratedFiles(pages=md_paths, index=llms_path, full=full_path)
+    return GeneratedFiles(pages=md_paths, index_path=llms_path, full_path=full_path)
 
 
 def _on_build_finished(app: "Sphinx", exception: Optional[Exception]) -> None:
@@ -424,9 +461,11 @@ def _on_build_finished(app: "Sphinx", exception: Optional[Exception]) -> None:
     logger = logging.getLogger(__name__)
     try:
         result = generate_llms_files(Path(app.srcdir), Path(app.outdir))
-        logger.info("generated %s and %s", result.index.name, result.full.name)
+        logger.info("generated %s and %s", result.index_path.name, result.full_path.name)
     except Exception as exc:  # pragma: no cover - defensive: never break the docs build
-        logger.info("llms.txt generation skipped: %s", exc)
+        # Surface the failure as a warning so ``docs-check`` (``--fail-on-warning``)
+        # notices a missing ``llms.txt`` instead of publishing a site without it.
+        logger.warning("llms.txt generation failed: %s", exc)
 
 
 def setup(app: "Sphinx") -> Dict[str, object]:
