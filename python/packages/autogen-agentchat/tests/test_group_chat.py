@@ -1944,3 +1944,96 @@ async def test_selector_group_chat_streaming(runtime: AgentRuntime | None) -> No
 
     # Content-based verification instead of index-based
     # Note: The streaming test verifies the streaming behavior, not the final result content
+
+
+@pytest.mark.asyncio
+async def test_get_message_thread(runtime: AgentRuntime | None) -> None:
+    model_client = ReplayChatCompletionClient(["first response", "second response"])
+    agent = AssistantAgent("agent1", model_client=model_client)
+    team = RoundRobinGroupChat([agent], max_turns=2, runtime=runtime)
+
+    # Calling it before the team is initialized returns an empty thread without hanging.
+    assert await asyncio.wait_for(team.get_message_thread(), timeout=10) == []
+
+    result = await team.run(task="Task")
+
+    # Calling it after the team has stopped must return in a bounded time for both
+    # the embedded runtime (restarted on demand) and the externally provided runtime.
+    thread = await asyncio.wait_for(team.get_message_thread(), timeout=10)
+    # The thread holds the task message and all the response messages in order.
+    assert [m.id for m in thread] == [m.id for m in result.messages]
+
+    manager = await team._runtime.try_get_underlying_agent_instance(  # pyright: ignore
+        AgentId(type=team._group_chat_manager_topic_type, key=team._team_id),  # pyright: ignore
+        RoundRobinGroupChatManager,
+    )
+    assert [m.id for m in thread] == [m.id for m in manager._message_thread]  # pyright: ignore
+
+    # The returned list is a snapshot: mutating it does not change the team's thread.
+    thread.append(TextMessage(content="extra", source="user"))
+    thread.clear()
+    thread_again = await asyncio.wait_for(team.get_message_thread(), timeout=10)
+    assert len(thread_again) == len(result.messages)
+    assert [m.id for m in thread_again] == [m.id for m in manager._message_thread]  # pyright: ignore
+
+    # Resetting the team clears the message thread.
+    await team.reset()
+    assert await asyncio.wait_for(team.get_message_thread(), timeout=10) == []
+
+
+@pytest.mark.asyncio
+async def test_get_message_thread_while_running(runtime: AgentRuntime | None) -> None:
+    model_client = ReplayChatCompletionClient(["first response", "second response", "third response"])
+    agent = AssistantAgent("agent1", model_client=model_client, model_client_stream=True)
+    team = RoundRobinGroupChat([agent], max_turns=3, runtime=runtime)
+
+    streamed_messages: List[BaseAgentEvent | BaseChatMessage] = []
+    snapshots: List[List[BaseAgentEvent | BaseChatMessage]] = []
+    final_result: TaskResult | None = None
+    async for message in team.run_stream(task="Task"):
+        if isinstance(message, TaskResult):
+            final_result = message
+            continue
+        streamed_messages.append(message)
+        if len(streamed_messages) in (1, 4):
+            snapshots.append(await asyncio.wait_for(team.get_message_thread(), timeout=10))
+
+    assert final_result is not None
+    # Reading the thread does not interfere with the output stream.
+    assert [m.content for m in final_result.messages if isinstance(m, TextMessage)] == [
+        "Task",
+        "first response",
+        "second response",
+        "third response",
+    ]
+    assert any(isinstance(m, ModelClientStreamingChunkEvent) for m in streamed_messages)
+
+    thread = await asyncio.wait_for(team.get_message_thread(), timeout=10)
+    assert [m.id for m in thread] == [m.id for m in final_result.messages]
+    # Streaming chunks are only emitted to the output stream, never added to the thread.
+    assert not any(isinstance(m, ModelClientStreamingChunkEvent) for m in thread)
+
+    # Snapshots taken while running are in-order prefixes of the final thread.
+    assert len(snapshots) == 2
+    for snapshot in snapshots:
+        assert len(snapshot) > 0
+        assert [m.id for m in snapshot] == [m.id for m in thread[: len(snapshot)]]
+
+
+@pytest.mark.asyncio
+async def test_get_message_thread_with_nested_team(runtime: AgentRuntime | None) -> None:
+    inner_agent = AssistantAgent("inner_agent", model_client=ReplayChatCompletionClient(["inner response"]))
+    inner_team = RoundRobinGroupChat([inner_agent], max_turns=1)
+    outer_agent = AssistantAgent("outer_agent", model_client=ReplayChatCompletionClient(["outer response"]))
+    team = RoundRobinGroupChat([inner_team, outer_agent], max_turns=2, runtime=runtime)
+
+    result = await team.run(task="Task")
+    thread = await asyncio.wait_for(team.get_message_thread(), timeout=10)
+
+    assert [m.id for m in thread] == [m.id for m in result.messages]
+    # The result messages of the nested team are part of the message thread.
+    assert [m.content for m in thread if isinstance(m, TextMessage)] == [
+        "Task",
+        "inner response",
+        "outer response",
+    ]
