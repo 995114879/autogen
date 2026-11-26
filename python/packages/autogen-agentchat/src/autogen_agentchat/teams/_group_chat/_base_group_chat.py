@@ -27,6 +27,7 @@ from ...messages import (
 from ...state import TeamState
 from ._chat_agent_container import ChatAgentContainer
 from ._events import (
+    GroupChatGetThread,
     GroupChatPause,
     GroupChatReset,
     GroupChatResume,
@@ -744,6 +745,48 @@ class BaseGroupChat(Team, ABC, ComponentBase[BaseModel]):
             GroupChatResume(),
             recipient=AgentId(type=self._group_chat_manager_topic_type, key=self._team_id),
         )
+
+    async def get_message_thread(self) -> List[BaseAgentEvent | BaseChatMessage]:
+        """Get a snapshot of the current message thread of the group chat.
+
+        The message thread contains all the messages that have been processed by the group chat
+        so far, in chronological order. It includes the task messages, the messages produced by
+        the participants (including the inner events of the agent responses), and the result
+        messages of nested teams. Streaming chunk events, which are only sent to the output
+        stream, are not part of the message thread.
+
+        This method can be called while the team is running, in which case it returns the
+        messages that have occurred up to that point. It does not change the state of the team,
+        stop the conversation, or consume the output stream.
+
+        If the group chat has not been initialized, an empty list is returned.
+
+        Returns:
+            A new list containing a snapshot of the current message thread.
+        """
+        if not self._initialized:
+            return []
+
+        thread: List[BaseAgentEvent | BaseChatMessage] = []
+        if self._embedded_runtime and not self._is_running:
+            # The embedded runtime is stopped while the team is idle. Restart it temporarily
+            # to serve this request, in the same way as :meth:`reset`.
+            assert isinstance(self._runtime, SingleThreadedAgentRuntime)
+            self._runtime.start()
+            try:
+                thread = await self._runtime.send_message(
+                    GroupChatGetThread(),
+                    recipient=AgentId(type=self._group_chat_manager_topic_type, key=self._team_id),
+                )
+            finally:
+                await self._runtime.stop_when_idle()
+        else:
+            thread = await self._runtime.send_message(
+                GroupChatGetThread(),
+                recipient=AgentId(type=self._group_chat_manager_topic_type, key=self._team_id),
+            )
+        # Return a copy so that mutations by the caller cannot alter the group chat state.
+        return list(thread)
 
     async def save_state(self) -> Mapping[str, Any]:
         """Save the state of the group chat team.

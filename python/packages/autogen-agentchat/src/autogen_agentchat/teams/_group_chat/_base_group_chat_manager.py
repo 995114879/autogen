@@ -9,6 +9,7 @@ from ...messages import BaseAgentEvent, BaseChatMessage, MessageFactory, SelectS
 from ._events import (
     GroupChatAgentResponse,
     GroupChatError,
+    GroupChatGetThread,
     GroupChatMessage,
     GroupChatPause,
     GroupChatRequestPublish,
@@ -274,6 +275,15 @@ class BaseGroupChatManager(SequentialRoutedAgent, ABC):
         """Reset the group chat manager. Calling :meth:`reset` to reset the group chat manager
         and clear the message thread."""
         await self.reset()
+
+    @rpc
+    async def handle_get_thread(self, message: GroupChatGetThread, ctx: MessageContext) -> Any:
+        """Return a snapshot of the current message thread of the group chat.
+
+        The return type is annotated as ``Any`` because the :func:`~autogen_core.rpc`
+        decorator only accepts message types or ``Any`` as the return annotation.
+        """
+        return list(self._message_thread)
 
     @rpc
     async def handle_pause(self, message: GroupChatPause, ctx: MessageContext) -> None:
