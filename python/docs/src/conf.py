@@ -45,6 +45,7 @@ extensions = [
     "myst_nb",
     "sphinxcontrib.autodoc_pydantic",
     "_extension.code_lint",
+    "_extension.llms_txt",
 ]
 suppress_warnings = ["myst.header"]
 
