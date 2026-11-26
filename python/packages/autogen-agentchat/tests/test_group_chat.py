@@ -1968,6 +1968,7 @@ async def test_get_message_thread(runtime: AgentRuntime | None) -> None:
         RoundRobinGroupChatManager,
     )
     assert [m.id for m in thread] == [m.id for m in manager._message_thread]  # pyright: ignore
+    assert thread is not manager._message_thread  # pyright: ignore
 
     # The returned list is a snapshot: mutating it does not change the team's thread.
     thread.append(TextMessage(content="extra", source="user"))
@@ -1975,6 +1976,8 @@ async def test_get_message_thread(runtime: AgentRuntime | None) -> None:
     thread_again = await asyncio.wait_for(team.get_message_thread(), timeout=10)
     assert len(thread_again) == len(result.messages)
     assert [m.id for m in thread_again] == [m.id for m in manager._message_thread]  # pyright: ignore
+    # Reading the thread does not leave the team in a running state.
+    assert team._is_running is False  # pyright: ignore
 
     # Resetting the team clears the message thread.
     await team.reset()
@@ -1996,7 +1999,10 @@ async def test_get_message_thread_while_running(runtime: AgentRuntime | None) ->
             continue
         streamed_messages.append(message)
         if len(streamed_messages) in (1, 4):
+            # Reading the thread does not stop the team.
+            assert team._is_running is True  # pyright: ignore
             snapshots.append(await asyncio.wait_for(team.get_message_thread(), timeout=10))
+            assert team._is_running is True  # pyright: ignore
 
     assert final_result is not None
     # Reading the thread does not interfere with the output stream.

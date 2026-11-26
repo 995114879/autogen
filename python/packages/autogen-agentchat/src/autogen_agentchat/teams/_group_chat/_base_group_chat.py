@@ -767,24 +767,19 @@ class BaseGroupChat(Team, ABC, ComponentBase[BaseModel]):
         if not self._initialized:
             return []
 
+        recipient = AgentId(type=self._group_chat_manager_topic_type, key=self._team_id)
         thread: List[BaseAgentEvent | BaseChatMessage] = []
         if self._embedded_runtime and not self._is_running:
-            # The embedded runtime is stopped while the team is idle. Restart it temporarily
-            # to serve this request, in the same way as :meth:`reset`.
+            # The embedded runtime is stopped while the team is idle, so restart it for the
+            # duration of this request the same way as :meth:`reset` does.
             assert isinstance(self._runtime, SingleThreadedAgentRuntime)
             self._runtime.start()
             try:
-                thread = await self._runtime.send_message(
-                    GroupChatGetThread(),
-                    recipient=AgentId(type=self._group_chat_manager_topic_type, key=self._team_id),
-                )
+                thread = await self._runtime.send_message(GroupChatGetThread(), recipient=recipient)
             finally:
                 await self._runtime.stop_when_idle()
         else:
-            thread = await self._runtime.send_message(
-                GroupChatGetThread(),
-                recipient=AgentId(type=self._group_chat_manager_topic_type, key=self._team_id),
-            )
+            thread = await self._runtime.send_message(GroupChatGetThread(), recipient=recipient)
         # Return a copy so that mutations by the caller cannot alter the group chat state.
         return list(thread)
 
