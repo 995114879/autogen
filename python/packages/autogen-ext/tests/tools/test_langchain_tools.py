@@ -5,6 +5,7 @@ import pytest
 from autogen_core import CancellationToken
 from autogen_core.tools import Tool
 from autogen_ext.tools.langchain import LangChainToolAdapter  # type: ignore
+from langchain_core.callbacks import Callbacks
 from langchain_core.callbacks.manager import AsyncCallbackManagerForToolRun, CallbackManagerForToolRun
 from langchain_core.tools import BaseTool as LangChainTool
 from langchain_core.tools import tool  # pyright: ignore
@@ -40,6 +41,37 @@ class CustomCalculatorTool(LangChainTool):
     ) -> int:
         """Use the tool asynchronously."""
         return self._run(a, b, run_manager=run_manager.get_sync() if run_manager else None)
+
+
+class SearchToolWithoutArgsSchema(LangChainTool):
+    name: str = "Search"
+    description: str = "useful for searching documents"
+
+    def _run(
+        self,
+        query: str,
+        run_manager: Optional[CallbackManagerForToolRun] = None,
+        callbacks: Optional[Callbacks] = None,
+    ) -> str:
+        """Search for documents matching the query."""
+        return f"results for {query}"
+
+
+@pytest.mark.asyncio
+async def test_langchain_tool_adapter_without_args_schema() -> None:
+    adapter = cast(Tool, LangChainToolAdapter(SearchToolWithoutArgsSchema()))  # type: ignore
+
+    schema = adapter.schema
+
+    assert schema["name"] == "Search"
+    assert schema["description"] == "useful for searching documents"
+    assert schema["parameters"]["type"] == "object"
+    assert set(schema["parameters"]["properties"]) == {"query"}
+    assert schema["parameters"]["properties"]["query"]["type"] == "string"
+    assert schema["parameters"]["required"] == ["query"]
+
+    result = await adapter.run_json({"query": "autogen"}, CancellationToken())
+    assert result == "results for autogen"
 
 
 @pytest.mark.asyncio

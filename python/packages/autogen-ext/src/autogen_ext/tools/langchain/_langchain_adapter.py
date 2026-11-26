@@ -2,14 +2,48 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from typing import TYPE_CHECKING, Any, Callable, Dict, Type, cast
+from typing import TYPE_CHECKING, Any, Callable, Dict, Type, cast, get_args
 
 from autogen_core import CancellationToken
 from autogen_core.tools import BaseTool
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, create_model
 
 if TYPE_CHECKING:
     from langchain_core.tools import BaseTool as LangChainTool
+
+
+# Arguments that LangChain injects into ``BaseTool._run``/``_arun`` rather than
+# accepting them from the caller.
+_LANGCHAIN_INJECTED_ARG_NAMES = frozenset({"run_manager", "callbacks"})
+
+
+def _is_langchain_injected_arg(name: str, parameter: inspect.Parameter) -> bool:
+    if name in _LANGCHAIN_INJECTED_ARG_NAMES:
+        return True
+
+    annotation = parameter.annotation
+    if annotation is inspect.Parameter.empty:
+        return False
+
+    injected_types: list[type[Any]] = []
+    try:
+        from langchain_core.callbacks.manager import (  # type: ignore[import-not-found]
+            AsyncCallbackManagerForToolRun,
+            CallbackManagerForToolRun,
+        )
+
+        injected_types.extend([CallbackManagerForToolRun, AsyncCallbackManagerForToolRun])
+    except ImportError:
+        pass
+    try:
+        from langchain_core.tools.base import InjectedToolArg  # type: ignore[import-not-found]
+
+        injected_types.append(InjectedToolArg)
+    except ImportError:
+        pass
+
+    type_args = get_args(annotation) or (annotation,)
+    return any(isinstance(t, type) and any(issubclass(t, injected) for injected in injected_types) for t in type_args)
 
 
 class LangChainToolAdapter(BaseTool[BaseModel, Any]):
@@ -164,13 +198,18 @@ class LangChainToolAdapter(BaseTool[BaseModel, Any]):
         if self._langchain_tool.args_schema:  # pyright: ignore
             args_type = self._langchain_tool.args_schema  # pyright: ignore
         else:
-            # Infer args_type from the callable's signature
+            # Infer args_type from the callable's signature, excluding arguments
+            # that LangChain injects (e.g. ``run_manager``) since they are not
+            # part of the tool's public input schema.
             sig = inspect.signature(cast(Callable[..., Any], self._callable))  # type: ignore
-            fields = {
-                k: (v.annotation, Field(...))
-                for k, v in sig.parameters.items()
-                if k != "self" and v.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
-            }
+            fields: Dict[str, Any] = {}
+            for k, v in sig.parameters.items():
+                if k == "self" or v.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+                    continue
+                if _is_langchain_injected_arg(k, v):
+                    continue
+                default = ... if v.default is inspect.Parameter.empty else v.default
+                fields[k] = (v.annotation, default)
             args_type = create_model(f"{name}Args", **fields)  # type: ignore
             # Note: type ignore is used due to a LangChain typing limitation
 
